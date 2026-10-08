@@ -1074,6 +1074,23 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                   await bind.mainSetLocalOption(
                       key: key, value: value ? 'Y' : 'N'),
             ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                icon: const Icon(Icons.copy, size: 16),
+                label: Text(translate('Copy MCP token')),
+                onPressed: () {
+                  final token =
+                      bind.mainGetLocalOption(key: kOptionMcpToken);
+                  if (token.isEmpty) {
+                    showToast(translate('MCP token not created yet, restart the app'));
+                    return;
+                  }
+                  Clipboard.setData(ClipboardData(text: token));
+                  showToast(translate('Copied'));
+                },
+              ),
+            ),
             _OptionCheckBox(context, 'Enable remote configuration modification',
                 kOptionAllowRemoteConfigModification,
                 enabled: enabled, fakeValue: fakeValue),

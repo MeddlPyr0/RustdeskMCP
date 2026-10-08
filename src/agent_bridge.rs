@@ -31,7 +31,14 @@ use std::{
 const MCP_ENABLE_OPTION: &str = "enable-mcp-server";
 const MCP_ENABLE_OPTION_LEGACY: &str = "enable-mcp-agent";
 const MCP_LISTEN_ADDR: &str = "127.0.0.1:59940";
+const MCP_LISTEN_PORT: u16 = 59940;
 const MCP_HTTP_PATH: &str = "/mcp";
+// Bearer token required on every request. Taken from the environment if set,
+// otherwise generated once and stored in the local config under this key.
+const MCP_TOKEN_OPTION: &str = "mcp-token";
+const MCP_TOKEN_ENV: &str = "RUSTDESK_MCP_TOKEN";
+const MCP_TOKEN_MIN_LEN: usize = 32;
+const MCP_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const MCP_SERVER_NAME: &str = "rustdesk";
 const MCP_SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -40,6 +47,7 @@ const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(12);
 const FRAME_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 
 static START_MCP_SERVER: Once = Once::new();
+static MCP_TOKEN_LOCK: Mutex<()> = Mutex::new(());
 static DESKTOP_SESSION_REGISTRY: OnceLock<Mutex<HashMap<String, DesktopSessionHandle>>> =
     OnceLock::new();
 static FRAME_CACHE: OnceLock<Mutex<HashMap<(SessionID, usize), CachedFrame>>> = OnceLock::new();
@@ -63,6 +71,9 @@ pub fn start_server_once() {
 }
 
 fn serve_http() -> io::Result<()> {
+    // Make sure a token exists before the first client connects, so the
+    // settings page can offer it for copying.
+    let _ = mcp_token();
     let listener = TcpListener::bind(MCP_LISTEN_ADDR)?;
     log::info!("RustDesk MCP HTTP listening on http://{MCP_LISTEN_ADDR}{MCP_HTTP_PATH}");
     for stream in listener.incoming() {
@@ -91,11 +102,85 @@ fn handle_http_client(mut stream: TcpStream) -> io::Result<()> {
     write_http_response(&mut stream, response)
 }
 
-fn route_http_request(request: HttpRequest) -> HttpResponse {
-    let path = request.path.split('?').next().unwrap_or_default();
-    if request.method == "OPTIONS" {
-        return HttpResponse::empty(204, "No Content");
+fn mcp_token() -> String {
+    if let Ok(token) = std::env::var(MCP_TOKEN_ENV) {
+        let token = token.trim().to_string();
+        if token.len() >= MCP_TOKEN_MIN_LEN {
+            return token;
+        }
+        log::warn!("{MCP_TOKEN_ENV} is shorter than {MCP_TOKEN_MIN_LEN} characters, ignoring it");
     }
+    let _guard = MCP_TOKEN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let token = LocalConfig::get_option(MCP_TOKEN_OPTION);
+    if token.len() >= MCP_TOKEN_MIN_LEN {
+        return token;
+    }
+    let token = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    LocalConfig::set_option(MCP_TOKEN_OPTION.to_string(), token.clone());
+    token
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Rejects anything that is not a local, non-browser MCP client holding the token.
+fn check_request_security(request: &HttpRequest) -> Option<HttpResponse> {
+    // Browsers always attach an Origin header to cross-site and POST requests;
+    // MCP clients such as Claude Code or mcp-remote do not.
+    if request.headers.contains_key("origin") {
+        return Some(HttpResponse::text(
+            403,
+            "Forbidden",
+            "Requests from web pages are not allowed",
+        ));
+    }
+    // Guard against DNS rebinding: only accept the loopback host names.
+    let host = request
+        .headers
+        .get("host")
+        .map(|h| h.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let allowed_hosts = [
+        format!("127.0.0.1:{MCP_LISTEN_PORT}"),
+        format!("localhost:{MCP_LISTEN_PORT}"),
+    ];
+    if !allowed_hosts.iter().any(|allowed| *allowed == host) {
+        return Some(HttpResponse::text(403, "Forbidden", "Invalid Host header"));
+    }
+    let provided = request
+        .headers
+        .get("authorization")
+        .map(|v| v.trim())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(|v| v.trim())
+        .unwrap_or_default();
+    let expected = mcp_token();
+    if provided.is_empty() || !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+        return Some(HttpResponse::text(
+            401,
+            "Unauthorized",
+            "Missing or invalid bearer token. Copy it from Settings -> Security -> Copy MCP token.",
+        ));
+    }
+    None
+}
+
+fn route_http_request(request: HttpRequest) -> HttpResponse {
+    if let Some(denied) = check_request_security(&request) {
+        return denied;
+    }
+    let path = request.path.split('?').next().unwrap_or_default();
     if path != "/" && path != MCP_HTTP_PATH {
         return HttpResponse::text(404, "Not Found", "RustDesk MCP endpoint not found");
     }
@@ -1563,6 +1648,12 @@ fn read_http_request(stream: &TcpStream) -> io::Result<Option<HttpRequest>> {
         }
     }
 
+    if content_length > MCP_MAX_BODY_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MCP request body too large",
+        ));
+    }
     let mut body = vec![0; content_length];
     if content_length > 0 {
         reader.read_exact(&mut body)?;
@@ -1580,18 +1671,7 @@ fn write_http_response(stream: &mut TcpStream, response: HttpResponse) -> io::Re
     let mut headers = vec![
         ("Connection".to_string(), "close".to_string()),
         ("Content-Length".to_string(), response.body.len().to_string()),
-        (
-            "Access-Control-Allow-Origin".to_string(),
-            "*".to_string(),
-        ),
-        (
-            "Access-Control-Allow-Headers".to_string(),
-            "Content-Type, Accept, MCP-Protocol-Version".to_string(),
-        ),
-        (
-            "Access-Control-Allow-Methods".to_string(),
-            "POST, GET, OPTIONS".to_string(),
-        ),
+        // No CORS headers on purpose: web pages must not be able to talk to this server.
         (
             "MCP-Protocol-Version".to_string(),
             MCP_PROTOCOL_VERSION.to_string(),

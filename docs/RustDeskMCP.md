@@ -88,6 +88,12 @@ The built-in server listens on:
 
 The transport is JSON-RPC 2.0 over HTTP `POST`.
 
+### Access control
+
+- Every request must carry `Authorization: Bearer <token>`. The token is generated on first start and stored in the local config as `mcp-token`; copy it via `Settings -> Security -> Copy MCP token`, or override it with the environment variable `RUSTDESK_MCP_TOKEN` (at least 32 characters).
+- Requests with an `Origin` header (web pages) are rejected, and the `Host` header must be `127.0.0.1:59940` or `localhost:59940` (DNS rebinding protection).
+- No CORS headers are sent.
+
 ## Recommended workflow
 
 ### Desktop workflow

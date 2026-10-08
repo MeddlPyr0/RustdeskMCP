@@ -50,6 +50,7 @@ function Invoke-McpTool($id, $name, $arguments) {
     -Uri 'http://127.0.0.1:59940/mcp' `
     -Method Post `
     -ContentType 'application/json' `
+    -Headers @{ Authorization = "Bearer $env:RUSTDESK_MCP_TOKEN" } `
     -Body $body
 }
 ```

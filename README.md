@@ -38,8 +38,17 @@ Chinese version of this fork overview: [docs/README-ZH.md](docs/README-ZH.md)
 
 1. Start `RustDeskMCP`.
 2. In the GUI, enable `Settings -> Security -> Enable MCP server`.
-3. Send JSON-RPC requests to `http://127.0.0.1:59940/mcp`.
-4. Use `initialize`, then `tools/list`, then `tools/call`.
+3. Click `Copy MCP token` below the switch.
+4. Send JSON-RPC requests to `http://127.0.0.1:59940/mcp` with the header `Authorization: Bearer <token>`.
+5. Use `initialize`, then `tools/list`, then `tools/call`.
+
+Requests without the token, with a foreign `Host` header or with an `Origin` header (i.e. from a web page) are rejected. The token can also be set with the environment variable `RUSTDESK_MCP_TOKEN` (at least 32 characters).
+
+Claude Code example:
+
+```
+claude mcp add --transport http rustdesk http://127.0.0.1:59940/mcp --header "Authorization: Bearer <token>"
+```
 
 ### Current MCP scope
 
