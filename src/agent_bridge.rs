@@ -9,12 +9,14 @@ use crate::{
         MOUSE_TYPE_MOVE, MOUSE_TYPE_UP,
     },
 };
+use base::message_proto::{
+    terminal_response, ControlKey, KeyEvent, KeyboardMode, TerminalResponse,
+};
 use encoding_rs::GBK;
 use hbb_common::{
     base64::{engine::general_purpose::STANDARD, Engine as _},
     config::LocalConfig,
     log,
-    message_proto::{terminal_response, ControlKey, KeyEvent, KeyboardMode, TerminalResponse},
     rendezvous_proto::ConnType,
 };
 use serde_json::{json, Map, Value};
