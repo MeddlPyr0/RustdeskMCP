@@ -57,8 +57,9 @@ jobs:
   generate-sbom:
     runs-on: ubuntu-latest
 
+    # fork: read-only token, a write request here makes the whole run fail at startup
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
