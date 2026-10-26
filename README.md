@@ -64,6 +64,9 @@ Desktop session tools:
 - `mouse_click`
 - `keyboard_input`
 - `keyboard_hotkey`
+- `wait_for_connection`
+- `request_elevation`
+- `close_session`
 
 Terminal session tools:
 

@@ -19,19 +19,21 @@ Use this skill for the MCP features implemented in this repository, not for the 
 ## Desktop Workflow
 
 1. Call `open_desktop_session(id)`.
-2. If `needsPassword` is true, call `input_password(session, password)`.
+2. If `needsPassword` is true, call `input_password(session, password)`. If the peer uses click-to-accept (no password), call `wait_for_connection(session, timeoutSeconds)` instead and wait until the remote user has accepted. For admin tasks on Windows, call `request_elevation(session)`; the remote user confirms the UAC prompt.
 3. Inspect `displays`. If the peer is multi-monitor, call `select_desktop_display(session, display)` before acting.
 4. Call `get_desktop_frame(session, display?)` and reason from the returned remote frame, not from a local host screenshot.
 5. For a multi-step control task, call `lock_remote_user_input(session)` once before the task and `unlock_remote_user_input(session)` once after the task.
 6. Use `mouse_move`, `mouse_click`, `keyboard_input`, and `keyboard_hotkey` to drive the remote UI.
+7. Call `close_session(session)` when done.
 
 ## Terminal Workflow
 
 1. Call `open_terminal_session(id, rows?, cols?)`.
-2. If `needsPassword` is true, call `input_password(session, password)`.
+2. If `needsPassword` is true, call `input_password(session, password)`. If the peer uses click-to-accept (no password), call `wait_for_connection(session, timeoutSeconds)` instead and wait until the remote user has accepted.
 3. Send a shell command through `terminal_input(session, terminalId, data)`.
 4. End the command string with a single trailing `\n` when it should execute immediately. The tool now performs the submit internally.
 5. Read results through `terminal_output(session, terminalId, limit?)`.
+6. Call `close_session(session)` when done.
 
 ## Important Rules
 

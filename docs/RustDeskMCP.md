@@ -34,6 +34,9 @@ Implemented desktop MCP tools:
 - `mouse_click`
 - `keyboard_input`
 - `keyboard_hotkey`
+- `wait_for_connection`
+- `request_elevation`
+- `close_session`
 
 Current desktop behavior:
 
@@ -99,21 +102,24 @@ The transport is JSON-RPC 2.0 over HTTP `POST`.
 ### Desktop workflow
 
 1. Call `open_desktop_session(id)`.
-2. If `needsPassword` is true, call `input_password(session, password)`.
+2. If `needsPassword` is true, call `input_password(session, password)`. If the peer uses click-to-accept (no password), call `wait_for_connection(session, timeoutSeconds)` instead and wait until the remote user has accepted. For admin tasks on Windows, call `request_elevation(session)`; the remote user confirms the UAC prompt.
 3. If the peer has multiple displays, inspect `displays` and call `select_desktop_display`.
 4. Call `get_desktop_frame` before acting.
 5. For a multi-step automation task, call `lock_remote_user_input` once at the start.
 6. Send mouse and keyboard operations.
 7. Fetch another desktop frame after meaningful UI changes.
 8. Call `unlock_remote_user_input` when the task finishes.
+9. Call `close_session(session)` to disconnect and close the tab.
 
 ### Terminal workflow
 
 1. Call `open_terminal_session(id, rows?, cols?)`.
-2. If `needsPassword` is true, call `input_password(session, password)`.
+2. If `needsPassword` is true, call `input_password(session, password)`. If the peer uses click-to-accept (no password), call `wait_for_connection(session, timeoutSeconds)` instead and wait until the remote user has accepted.
 3. Send a command through `terminal_input(session, terminalId, "<command>\n")`.
 4. Poll `terminal_output`.
 5. Prefer explicit output markers when the command must be machine-read.
+6. Call `close_session(session)` when done.
+6. Call `close_session(session)` when done.
 
 ## Important caveats
 

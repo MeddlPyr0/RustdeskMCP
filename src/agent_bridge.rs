@@ -47,6 +47,10 @@ const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const SESSION_OPEN_TIMEOUT: Duration = Duration::from_secs(12);
 const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(12);
 const FRAME_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+const ACCEPT_WAIT_DEFAULT_SECS: u32 = 120;
+const ACCEPT_WAIT_MAX_SECS: u32 = 600;
+const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 static START_MCP_SERVER: Once = Once::new();
 static MCP_TOKEN_LOCK: Mutex<()> = Mutex::new(());
@@ -234,7 +238,7 @@ fn handle_message(message: Value) -> Option<Value> {
 
     let result = match method {
         "initialize" => Ok(json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "protocolVersion": negotiate_protocol_version(message.get("params")),
             "capabilities": { "tools": { "listChanged": false } },
             "serverInfo": { "name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION }
         })),
@@ -257,12 +261,24 @@ fn handle_message(message: Value) -> Option<Value> {
     })
 }
 
+fn negotiate_protocol_version(params: Option<&Value>) -> &'static str {
+    let requested = params
+        .and_then(|params| params.get("protocolVersion"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    MCP_SUPPORTED_PROTOCOL_VERSIONS
+        .iter()
+        .copied()
+        .find(|version| *version == requested)
+        .unwrap_or(MCP_PROTOCOL_VERSION)
+}
+
 fn tools_list() -> Value {
     json!({
         "tools": [
             tool_def(
                 "open_desktop_session",
-                "Open a RustDesk desktop session through the normal user connection path.",
+                "Open a RustDesk desktop session through the normal user connection path. If the remote side has to accept the connection (click-to-accept, no password), call wait_for_connection next instead of input_password.",
                 json!({
                     "type": "object",
                     "properties": { "id": { "type": "string" } },
@@ -272,7 +288,7 @@ fn tools_list() -> Value {
             ),
             tool_def(
                 "open_terminal_session",
-                "Open a RustDesk terminal session and create terminal id 1.",
+                "Open a RustDesk terminal session and create terminal id 1. If the remote side has to accept the connection (click-to-accept, no password), call wait_for_connection next instead of input_password.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -434,6 +450,43 @@ fn tools_list() -> Value {
                     "required": ["session", "keys"],
                     "additionalProperties": false
                 })
+            ),
+            tool_def(
+                "wait_for_connection",
+                "Wait until the remote side has accepted the connection request (click-to-accept) or the password was accepted. Returns connected=false on timeout.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "session": { "type": "string" },
+                        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": ACCEPT_WAIT_MAX_SECS }
+                    },
+                    "required": ["session"],
+                    "additionalProperties": false
+                })
+            ),
+            tool_def(
+                "request_elevation",
+                "Ask a Windows peer to run the controlled side with administrator rights. The remote user has to confirm the UAC prompt.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "session": { "type": "string" }
+                    },
+                    "required": ["session"],
+                    "additionalProperties": false
+                })
+            ),
+            tool_def(
+                "close_session",
+                "Disconnect a desktop or terminal session and close its RustDesk tab or window.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "session": { "type": "string" }
+                    },
+                    "required": ["session"],
+                    "additionalProperties": false
+                })
             )
         ]
     })
@@ -510,6 +563,14 @@ fn handle_tool_call(params: Option<&Value>) -> Result<Value, ProtocolError> {
             required_str(args, "session")?,
             required_str(args, "text")?,
         )),
+        "wait_for_connection" => tool_payload_result(wait_for_connection(
+            required_str(args, "session")?,
+            optional_u32(args, "timeoutSeconds")?
+                .unwrap_or(ACCEPT_WAIT_DEFAULT_SECS)
+                .clamp(1, ACCEPT_WAIT_MAX_SECS),
+        )),
+        "request_elevation" => tool_payload_result(request_elevation(required_str(args, "session")?)),
+        "close_session" => tool_payload_result(close_session(required_str(args, "session")?)),
         "keyboard_hotkey" => {
             let keys = required_string_array(args, "keys")?;
             tool_payload_result(keyboard_hotkey(
@@ -661,6 +722,69 @@ fn input_password(session_handle: &str, password: &str) -> Result<Value, String>
             .as_ref()
             .map(|snapshot| displays_json(&snapshot.displays))
             .unwrap_or_else(|| json!([]))
+    }))
+}
+
+fn wait_for_connection(session_handle: &str, timeout_secs: u32) -> Result<Value, String> {
+    ensure_mcp_enabled()?;
+    let session_id = resolve_actual_session_any(session_handle)?;
+    let connected = wait_for_session_ready(session_id, Duration::from_secs(timeout_secs as u64));
+    let snapshot = session_snapshot(session_id);
+    Ok(json!({
+        "success": true,
+        "session": session_handle,
+        "actualSession": session_id.to_string(),
+        "connected": connected,
+        "display": snapshot.as_ref().map(|snapshot| snapshot.display).unwrap_or_default(),
+        "displays": snapshot
+            .as_ref()
+            .map(|snapshot| displays_json(&snapshot.displays))
+            .unwrap_or_else(|| json!([]))
+    }))
+}
+
+fn request_elevation(session_handle: &str) -> Result<Value, String> {
+    ensure_mcp_enabled()?;
+    let session_id = resolve_actual_session_id(session_handle)?;
+    flutter_ffi::session_elevate_direct(session_id);
+    Ok(json!({
+        "success": true,
+        "session": session_handle,
+        "actualSession": session_id.to_string(),
+        "note": "Elevation requested. The remote user has to confirm the UAC prompt; fetch a frame to check."
+    }))
+}
+
+fn close_session(session_handle: &str) -> Result<Value, String> {
+    ensure_mcp_enabled()?;
+    let resolved = resolve_actual_session_any(session_handle);
+    let state = desktop_session_registry()
+        .lock()
+        .unwrap()
+        .remove(session_handle)
+        .ok_or_else(|| format!("unknown session '{session_handle}'"))?;
+    clear_local_input_lock_for_peer(&state.peer_id);
+    let session = resolved.ok().and_then(|session_id| {
+        flutter::sessions::get_session_by_session_id(&session_id).map(|session| (session_id, session))
+    });
+    let Some((session_id, session)) = session else {
+        return Ok(json!({ "success": true, "session": session_handle, "alreadyClosed": true }));
+    };
+    // The UI owns the tab or window; closing it there also runs session_close.
+    session
+        .ui_handler
+        .push_event_to::<&str>("mcp_close_session", &[], &[&session_id]);
+    TERMINAL_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .retain(|(id, _), _| *id != session_id);
+    Ok(json!({
+        "success": true,
+        "session": session_handle,
+        "actualSession": session_id.to_string(),
+        "peerId": state.peer_id,
+        "alreadyClosed": false
     }))
 }
 
